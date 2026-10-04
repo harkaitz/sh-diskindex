@@ -1,0 +1,103 @@
+#!/bin/sh -e
+##:
+#h: Usage: diskindex { [REGEX] | -c MOUNT_DIR | -d }
+#h:
+#h: Maintain a list of files stored in your removable devices.
+#h:
+#h: With `-c` the program stores the list of files in the removable
+#h: media. To identify the removable media it uses it's UUID, the UUID
+#h: is printed once the indexation finishes, it can be consulted with `-u`.
+#h:
+#h: With `-d` you can list the indexed removable medias, and the date
+#h: of the indexation.
+#h:
+#h: Environment variables: DISKINDEX_DIR
+#h: Configuration files: ~/.config.sh
+##:
+diskindex() {
+    local OPTIND=1 optopt cmd=list
+    
+    # Parse command line arguments.
+    while getopts "Ucld" optopt; do
+        case $optopt in
+            u)  cmd=uuid;;
+            c)  cmd=create;;
+            d)  cmd=disks;;
+            l)  cmd=list;;
+            \?) return 1;;
+        esac
+    done
+    shift $(( $OPTIND - 1 ))
+    
+    # Commands.
+    case "${cmd}" in
+        uuid)   diskindex_uuid   "$@";;
+        create) diskindex_create "$@";;
+        list)   diskindex_list   "$@";;
+        disks)  diskindex_disks  "$@";;
+    esac
+    
+}
+# --------------------------------------------------------------------
+diskindex_list() {
+    local uuid
+    for uuid in $(diskindex_uuids); do
+        sed -n "\\|${1:-.*}|s|^|${uuid}:|p" "${DISKINDEX_DIR}/${uuid}.lst"
+    done
+}
+diskindex_disks() {
+    local uuid date
+    for uuid in $(diskindex_uuids); do
+        date="$(cat "${DISKINDEX_DIR}/${uuid}.date" 2>/dev/null || true)"
+        printf '%-30s  %s\n' "${uuid}" "${date:--}"
+        
+    done
+}
+diskindex_uuids() {
+    if test -d "${DISKINDEX_DIR}"; then
+        find "${DISKINDEX_DIR}" -type f -name '*.lst' -exec basename '{}' '.lst' ';'
+    fi
+}
+diskindex_create() {
+    local dir="$1" uuid="$(diskindex_uuid "$1")" pwd="$(pwd)"
+    test -n "${uuid}"
+    shift
+    mkdir -p "${DISKINDEX_DIR}"
+    cd "${dir}"
+    find . -type f > "${DISKINDEX_DIR}/${uuid}.lst.tmp"
+    cd "${pwd}"
+    sed 's|^./||' "${DISKINDEX_DIR}/${uuid}.lst.tmp" > "${DISKINDEX_DIR}/${uuid}.lst"
+    rm -f "${DISKINDEX_DIR}/${uuid}.lst.tmp"
+    date '+%Y-%m-%d' > "${DISKINDEX_DIR}/${uuid}.date"
+    echo "Indexed ${uuid}"
+}
+diskindex_uuid() {
+    local uuid dev
+    if test ! -n "${1}"; then
+        echo "error: Please specify a mount directory." >&2
+        return 1
+    fi
+    dev="$(mount | awk -v d="${1%/}" '$3 == d {print $1}')"
+    if test ! -n "${dev}"; then
+        echo "error: Can't find the device for '${1}'." >&2
+        return 1
+    fi
+    for uuid in $(ls /dev/disk/by-uuid); do
+        if test @"$(readlink -f /dev/disk/by-uuid/"${uuid}")" = @"${dev}"; then
+            echo "${uuid}"
+            return 0
+        fi
+    done
+    echo "error: Can't calculate the UUID of ${dev}" >&2
+    return 1
+}
+# --------------------------------------------------------------------
+: ${DISKINDEX_DIR:=${HOME}/.config/diskindex}
+if test @"${0##*/}" = @"diskindex"; then
+    case "${1}" in
+        -h|--help) sed -n 's/^ *#h: \{0,1\}//p' "$0";;
+        -V)        echo "DISKINDEX_DIR : ${DISKINDEX_DIR}";;
+        *)         diskindex "$@";;
+    esac
+    exit 0
+fi
